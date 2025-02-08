@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>부호, 그래프를 이용한 이차부등식의 풀이</title>
+  <!-- MathJax 라이브러리 로드 -->
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" defer></script>
+  <style>
+    /* 흑백 테마 */
+    body {
+      background-color: black;
+      color: white;
+      font-family: sans-serif;
+      margin: 0;
+      padding: 0;
+    }
+    .centered {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+    }
+    .difficulty-select, .name-input {
+      margin-top: 20px;
+    }
+    .energy-bar {
+      width: 80%;
+      height: 20px;
+      background-color: white;
+      margin: 10px auto;
+      position: relative;
+    }
+    .energy-inner {
+      height: 100%;
+      background-color: black;
+      transition: width 1s linear; /* 에너지바가 1초 간격으로 천천히 줄어듦 */
+    }
+    .question-container {
+      width: 80%;
+      margin: 0 auto;
+      margin-top: 30px;
+    }
+    .choices-container {
+      margin-top: 20px;
+    }
+    .choice-button {
+      display: block;
+      margin-bottom: 10px;
+      background-color: white;
+      color: black;
+      border: none;
+      padding: 10px;
+      cursor: pointer;
+      text-align: left;
+      width: 100%;
+    }
+    .choice-button:hover {
+      background-color: #333;
+      color: white;
+    }
+    .score-display {
+      margin: 20px;
+    }
+    #response {
+      margin: 20px;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+
+<!-- 첫 화면 -->
+<div id="app" class="centered" style="margin-top:50px;">
+  <h1>부호, 그래프를 이용한 이차부등식의 풀이</h1>
+
+  <!-- 이름 입력 칸 (가운데 정렬) -->
+  <div class="name-input">
+    <label for="playerName">이름을 입력하세요:</label><br>
+    <input type="text" id="playerName" style="text-align:center;">
+  </div>
+
+  <!-- 난이도 선택 -->
+  <div class="difficulty-select">
+    <label>난이도를 선택하세요:</label><br><br>
+    <button onclick="startGame('최상')">최상</button>
+    <button onclick="startGame('상')">상</button>
+    <button onclick="startGame('중')">중</button>
+    <button onclick="startGame('하')">하</button>
+  </div>
+</div>
+
+<!-- 실제 게임화면 -->
+<div id="gameArea" style="display:none;">
+  <div class="score-display centered">
+    <div>남은 기회: <span id="lifeCount">3</span></div>
+    <div>점수: <span id="scoreDisplay">0</span></div>
+    <div>경과 시간: <span id="elapsedTime">0</span>초</div>
+  </div>
+  <div class="energy-bar">
+    <div id="energyInner" class="energy-inner"></div>
+  </div>
+  <div id="questionContainer" class="question-container"></div>
+</div>
+
+<!-- 게임 종료 후 화면 -->
+<div id="gameOverArea" class="centered" style="display:none;">
+  <h2 id="gameOverMsg">게임 종료!</h2>
+  <button onclick="sendScore()">점수 전송</button>
+  <div id="response"></div>
+</div>
+
+<script>
+/* 
+ (31) 아래 함수로 데이터 서버에 전송 
+*/
+function saveData(game, name, score, elapsedTime) {
+  const FUNCTION_URL = "https://us-central1-record-f420d.cloudfunctions.net/report";
+
+  const requestData = {
+      game,
+      name,
+      score: parseInt(score, 10),
+      elapsedTime: parseInt(elapsedTime, 10)
+  };
+
+  fetch(FUNCTION_URL, {
+      method: 'POST',
+      headers: {
+          'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(requestData)
+  })
+  .then(async (response) => {
+      const responseData = await response.json();
+      if (response.ok) {
+          document.getElementById('response').innerText =
+              "성공: " + JSON.stringify(responseData, null, 2);
+      } else {
+          document.getElementById('response').innerText =
+              "오류: " + JSON.stringify(responseData, null, 2);
+      }
+  })
+  .catch((error) => {
+      console.error('요청 실패:', error);
+      document.getElementById('response').innerText =
+          "네트워크 오류: " + error.message;
+  });
+}
+
+/*************************************************************
+ * 게임 로직
+ *************************************************************/
+
+/* 난이도별 시간(초), 점수 설정 */
+let timeLimit = 0;       // 문제당 제한 시간 (초)
+let scorePerQuestion = 0;// 난이도별 점수
+let totalElapsed = 0;    // 전체 경과 시간 (초)
+let timerInterval = null;    // 총 경과시간 측정용 setInterval
+let questionTimer = null;    // 문제 제한시간 setTimeout
+let barInterval = null;      // 에너지바 감소 setInterval
+
+let currentQuestionIndex = 0;
+let currentLife = 3;
+let currentScore = 0;
+let playerName = "";
+
+/* 문제들을 무작위로 섞어 담을 배열 */
+let shuffledQuestions = [];
+
+/* 
+  (정답이 "해 없음"인 문제는 제외)
+  총 35문제 (원문제 중 실제로 정답 존재하는 것 전부).
+  보기 순서/정답은 기존 그대로 활용, 
+  하지만 뒤에서 shuffle하여 화면에 나타냄 (#25).
+*/
+const allQuestions = [
+  // (원문제 8)
+  {
+    statement: "\\(x^2 - 4x - 5 > 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x < -1\\) 또는 \\(x > 5\\)",
+      "\\(-1 \\le x \\le 5\\)",
+      "\\(-1 < x < 5\\)",
+      "해 없음"
+    ],
+    correctIndex: 0
+  },
+  // (원문제 9)
+  {
+    statement: "\\(x(6 - x) \\ge 3x - 4\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x \\le -1\\) 또는 \\(x \\ge 4\\)",
+      "\\(-1 \\le x \\le 4\\)",
+      "\\(x < -1\\)",
+      "\\(x > 4\\)"
+    ],
+    correctIndex: 1
+  },
+  // (원문제 11)
+  {
+    statement: "\\(x^2 - 2\\sqrt{3}\\,x + 3 \\le 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x = \\sqrt{3}\\)",
+      "\\(x = 0\\)",
+      "\\(x \\le -\\sqrt{3}\\)",
+      "\\(-\\sqrt{3} \\le x \\le \\sqrt{3}\\)"
+    ],
+    correctIndex: 0
+  },
+  // (원문제 12)
+  {
+    statement: "\\(x^2 - x - 20 < 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(-5 < x < 4\\)",
+      "\\(-4 < x < 5\\)",
+      "\\(x < -5\\) 또는 \\(x > 4\\)",
+      "\\(x \\le -4\\) 또는 \\(x \\ge 5\\)"
+    ],
+    correctIndex: 1
+  },
+  // (원문제 13)
+  {
+    statement: "\\(x^2 + 3x - 10 \\le 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x < -5\\) 또는 \\(x > 2\\)",
+      "\\(-5 < x < 2\\)",
+      "\\(-5 \\le x \\le 2\\)",
+      "\\(x \\le -5\\) 또는 \\(x \\ge 2\\)"
+    ],
+    correctIndex: 2
+  },
+  // (원문제 14)
+  {
+    statement: "\\(-2x^2 + 3x + 2 \\ge 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x \\le -\\tfrac12\\) 또는 \\(x \\ge 2\\)",
+      "\\(-\\tfrac12 \\le x \\le 2\\)",
+      "\\(x < -\\tfrac12\\)",
+      "\\(x > 2\\)"
+    ],
+    correctIndex: 1
+  },
+  // (원문제 15)
+  {
+    statement: "\\(x^2 + 2x - 8 \\le 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x < -4\\) 또는 \\(x > 2\\)",
+      "\\(-4 \\le x \\le 2\\)",
+      "\\(-2 \\le x \\le 4\\)",
+      "해 없음"
+    ],
+    correctIndex: 1
+  },
+  // (원문제 16)
+  {
+    statement: "\\(2x^2 + 3x - 2 \\ge 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x \\le -2\\) 또는 \\(x \\ge \\tfrac12\\)",
+      "\\(-2 < x < \\tfrac12\\)",
+      "\\(x = -2\\) 또는 \\(x = \\tfrac12\\)",
+      "해 없음"
+    ],
+    correctIndex: 0
+  },
+  // (원문제 17)
+  {
+    statement: "\\(2x^2 - 3x - 9 \\le 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x < -\\tfrac32\\) 또는 \\(x > 3\\)",
+      "\\(-\\tfrac32 \\le x \\le 3\\)",
+      "\\(x = -\\tfrac32\\) 또는 \\(x = 3\\)",
+      "\\(x > -\\tfrac32\\)"
+    ],
+    correctIndex: 1
+  },
+  // (원문제 18)
+  {
+    statement: "\\(2x^2 - 3x - 5 < 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x < -1\\) 또는 \\(x > 2.5\\)",
+      "\\(-1 \\le x \\le 2.5\\)",
+      "\\(x = -1\\) 또는 \\(x = 2.5\\)",
+      "\\(-1 < x < 2.5\\)"
+    ],
+    correctIndex: 3
+  },
+  // (원문제 19)
+  {
+    statement: "\\(-2x^2 + 5x + 3 > 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x < -\\tfrac12\\)",
+      "\\(x \\ge 3\\)",
+      "\\(-\\tfrac12 < x < 3\\)",
+      "해 없음"
+    ],
+    correctIndex: 2
+  },
+  // (원문제 20)
+  {
+    statement: "\\(x^2 + x - 6 \\ge 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x < -3\\) 또는 \\(x > 2\\)",
+      "\\(x \\le -3\\) 또는 \\(x \\ge 2\\)",
+      "\\(-3 < x < 2\\)",
+      "해 없음"
+    ],
+    correctIndex: 1
+  },
+  // (원문제 21)
+  {
+    statement: "\\(x^2 - 7x + 10 < 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x \\le 2\\) 또는 \\(x \\ge 5\\)",
+      "\\(-2 \\le x \\le 5\\)",
+      "\\(2 < x < 5\\)",
+      "\\(x < 0\\)"
+    ],
+    correctIndex: 2
+  },
+  // (원문제 22)
+  {
+    statement: "\\(x^2 - 5x + 4 \\le 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x \\le 1\\) 또는 \\(x \\ge 4\\)",
+      "\\(x < 1\\) 또는 \\(x > 4\\)",
+      "\\(-4 \\le x \\le 1\\)",
+      "\\(1 \\le x \\le 4\\)"
+    ],
+    correctIndex: 3
+  },
+  // (원문제 23)
+  {
+    statement: "\\(x^2 - 6x + 5 \\le 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(1 \\le x \\le 5\\)",
+      "\\(-1 \\le x \\le 5\\)",
+      "\\(x \\le 1\\) 또는 \\(x \\ge 5\\)",
+      "\\(x < 1\\) 또는 \\(x > 5\\)"
+    ],
+    correctIndex: 0
+  },
+  // (원문제 24)
+  {
+    statement: "\\(-x^2 + 8x - 16 \\ge 0\\)를 만족하는 \\(x\\)는?",
+    choices: [
+      "\\(x = 0\\)",
+      "\\(x = 4\\)",
+      "\\(x \\le 4\\)",
+      "해 없음"
+    ],
+    correctIndex: 1
+  },
+  // (원문제 25)
+  {
+    statement: "\\(x^2 - 2x - 8 \\le 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(-2 \\le x \\le 4\\)",
+      "\\(x < -2\\) 또는 \\(x > 4\\)",
+      "\\(x \\le -4\\) 또는 \\(x \\ge 2\\)",
+      "\\(x = -2\\) 또는 \\(x = 4\\)"
+    ],
+    correctIndex: 0
+  },
+  // (원문제 26)
+  {
+    statement: "\\(x^2 - x - 6 < 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x \\le -2\\) 또는 \\(x \\ge 3\\)",
+      "\\(-2 \\le x \\le 3\\)",
+      "\\(x < -2\\)",
+      "\\(-2 < x < 3\\)"
+    ],
+    correctIndex: 3
+  },
+  // (원문제 27)
+  {
+    statement: "\\(x^2 - 2x - 3 \\le 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(-1 \\le x \\le 3\\)",
+      "\\(x \\le -3\\) 또는 \\(x \\ge 1\\)",
+      "\\(x < -1\\)",
+      "\\(x \\ge 3\\)"
+    ],
+    correctIndex: 0
+  },
+  // (원문제 28)
+  {
+    statement: "\\(x^2 - 2x + 7 \\ge 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x \\ge 2\\)",
+      "해는 모든 실수",
+      "\\(x \\le -2\\)",
+      "해 없음"
+    ],
+    correctIndex: 1
+  },
+  // (원문제 29)
+  {
+    statement: "\\(2x^2 + 5x + 4 > 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x < -2\\) 또는 \\(x > 2\\)",
+      "\\(-4 < x < -\\tfrac12\\)",
+      "해 없음",
+      "해는 모든 실수"
+    ],
+    correctIndex: 3
+  },
+  // (원문제 30)
+  {
+    statement: "\\(x^2 - 2x - 5 \\le 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\((1 - \\sqrt{6}) \\le x \\le (1 + \\sqrt{6})\\)",
+      "\\(-1 \\le x \\le 5\\)",
+      "\\(x \\le (1 - \\sqrt{6})\\) 또는 \\(x \\ge (1 + \\sqrt{6})\\)",
+      "해 없음"
+    ],
+    correctIndex: 0
+  },
+  // (원문제 31)
+  {
+    statement: "\\(x^2 + x - 2 < 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x \\le -2\\) 또는 \\(x \\ge 1\\)",
+      "\\(x < -2\\)",
+      "\\(-2 < x < 1\\)",
+      "\\(x \\ge 0\\)"
+    ],
+    correctIndex: 2
+  },
+  // (원문제 39)
+  {
+    statement: "\\(x^2 + 3x - 4 < 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x < -4\\) 또는 \\(x > 1\\)",
+      "\\(-4 < x < 1\\)",
+      "\\(-1 < x < 4\\)",
+      "해는 모든 실수"
+    ],
+    correctIndex: 1
+  },
+  // (원문제 40) - 정정: 모든 실수
+  {
+    statement: "\\(x^2 + 2x + 1 \\ge 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "해는 모든 실수",
+      "\\(x = -1\\)",
+      "\\(x \\le -1\\)",
+      "해 없음"
+    ],
+    correctIndex: 0
+  },
+  // (원문제 41)
+  {
+    statement: "\\(x^2 - 2x - 3 > 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x \\le -3\\) 또는 \\(x \\ge 1\\)",
+      "\\(x < -1\\) 또는 \\(x > 3\\)",
+      "\\(-1 \\le x \\le 3\\)",
+      "해 없음"
+    ],
+    correctIndex: 1
+  },
+  // (원문제 43)
+  {
+    statement: "\\(x^2 + 8x + 16 \\le 0\\)를 만족하는 \\(x\\)는?",
+    choices: [
+      "\\(x = -4\\)",
+      "해는 모든 실수",
+      "해 없음",
+      "\\(x \\le -4\\)"
+    ],
+    correctIndex: 0
+  },
+  // (원문제 44)
+  {
+    statement: "\\(x^2 + 2x + 3 > 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x < -1\\)",
+      "\\(x = -1\\)",
+      "해는 모든 실수",
+      "해 없음"
+    ],
+    correctIndex: 2
+  },
+  // (원문제 45)
+  {
+    statement: "\\(x^2 + 2x + 3 \\ge 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "해는 모든 실수",
+      "\\(x \\le 0\\)",
+      "\\(x = -1\\)",
+      "해 없음"
+    ],
+    correctIndex: 0
+  },
+  // (원문제 46)
+  {
+    statement: "\\(x^2 - 2x - 3 \\ge 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x = -1\\) 또는 \\(x = 3\\)",
+      "\\(-3 \\le x \\le 1\\)",
+      "\\(-1 < x < 3\\)",
+      "\\(x \\le -1\\) 또는 \\(x \\ge 3\\)"
+    ],
+    correctIndex: 3
+  },
+  // (원문제 49)
+  {
+    statement: "\\(3x^2 - 6x + 3 > 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x \\neq 1\\)",
+      "\\(x = 1\\)",
+      "\\(x = 0\\)",
+      "해 없음"
+    ],
+    correctIndex: 0
+  },
+  // (원문제 50)
+  {
+    statement: "\\(2x^2 - 7x + 3 \\ge 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(0.5 < x < 3\\)",
+      "\\(x < 0.5\\)",
+      "\\(x \\le 0.5\\) 또는 \\(x \\ge 3\\)",
+      "\\(x \\le -3\\) 또는 \\(x \\ge 0.5\\)"
+    ],
+    correctIndex: 2
+  },
+  // (원문제 51)
+  {
+    statement: "\\(2x^2 - 5x + 2 > 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x = 0.5\\) 또는 \\(x = 2\\)",
+      "\\(x \\le 0.5\\) 또는 \\(x \\ge 2\\)",
+      "\\(x < 0.5\\) 또는 \\(x > 2\\)",
+      "해 없음"
+    ],
+    correctIndex: 2
+  },
+  // (원문제 52)
+  {
+    statement: "\\(2x^2 - 5x + 2 \\ge 0\\)를 만족하는 \\(x\\)의 범위는?",
+    choices: [
+      "\\(x \\le 0.5\\) 또는 \\(x \\ge 2\\)",
+      "\\(x = 0.5\\)",
+      "\\(0 < x < 2\\)",
+      "\\(x \\le 0\\) 또는 \\(x \\ge 2\\)"
+    ],
+    correctIndex: 0
+  },
+  // (원문제 53)
+  {
+    statement: "\\(2x^2 - 2x + \\tfrac12 \\le 0\\)를 만족하는 \\(x\\)는?",
+    choices: [
+      "\\(x = 0\\)",
+      "해는 모든 실수",
+      "\\(x = 0.5\\)",
+      "해 없음"
+    ],
+    correctIndex: 2
+  }
+];
+
+/* 문제 배열 무작위 섞기 */
+function shuffleQuestions() {
+  const arr = [...allQuestions];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const r = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[r]] = [arr[r], arr[i]];
+  }
+  return arr;
+}
+
+/* 보기(choices) 섞기 함수 (#25) */
+function shuffleArray(array) {
+  for (let i = array.length - 1; i > 0; i--) {
+    const r = Math.floor(Math.random() * (i + 1));
+    [array[i], array[r]] = [array[r], array[i]];
+  }
+}
+
+/* 게임 시작 */
+function startGame(difficulty) {
+  const nameField = document.getElementById('playerName');
+  if (!nameField.value.trim()) {
+    alert("이름을 입력하세요.");
+    return;
+  }
+  playerName = nameField.value.trim();
+
+  // 난이도별 제한시간/점수 세팅
+  switch(difficulty) {
+    case '최상':
+      timeLimit = 20; 
+      scorePerQuestion = 20; 
+      break;
+    case '상':
+      timeLimit = 30; 
+      scorePerQuestion = 15;
+      break;
+    case '중':
+      timeLimit = 40;
+      scorePerQuestion = 13;
+      break;
+    case '하':
+      timeLimit = 999999; // 사실상 무제한
+      scorePerQuestion = 10;
+      break;
+  }
+
+  // 초기화
+  totalElapsed = 0;
+  currentLife = 3;
+  currentScore = 0;
+  currentQuestionIndex = 0;
+
+  // 문제 무작위로 섞기
+  shuffledQuestions = shuffleQuestions();
+
+  // 첫화면 숨김, 게임화면 표시
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('gameArea').style.display = 'block';
+
+  // 전체 경과시간 타이머
+  timerInterval = setInterval(() => {
+    totalElapsed++;
+    document.getElementById('elapsedTime').textContent = totalElapsed;
+  }, 1000);
+
+  // 첫 문제 표시
+  showQuestion();
+}
+
+/* 문제 표시 */
+function showQuestion() {
+  if (currentLife <= 0) {
+    endGame("기회를 모두 소진했습니다!");
+    return;
+  }
+  if (currentQuestionIndex >= shuffledQuestions.length) {
+    endGame("모든 문제를 풀었습니다!");
+    return;
+  }
+
+  // 기존 타이머/바 인터벌 클리어
+  if (questionTimer) clearTimeout(questionTimer);
+  if (barInterval) clearInterval(barInterval);
+
+  // 에너지바 100%에서 시작
+  updateEnergyBar(100);
+
+  // 문제 제한시간 설정 (하 난이도면 사실상 무한)
+  if (timeLimit < 999999) {
+    // 문제 제한시간 타이머
+    questionTimer = setTimeout(() => {
+      // 시간 만료 -> 기회 1 차감 + 정답 표시 후 다음문제
+      currentLife--;
+      document.getElementById('lifeCount').textContent = currentLife;
+      alert("시간 초과!\n기회가 1 줄었습니다.\n(정답: " 
+            + getCorrectAnswerText(shuffledQuestions[currentQuestionIndex]) + ")");
+      currentQuestionIndex++;
+      showQuestion();
+    }, timeLimit * 1000);
+
+    // 에너지바 서서히 감소 (1초 간격)
+    let remainingSecs = timeLimit; 
+    barInterval = setInterval(()=> {
+      remainingSecs--;
+      let ratio = (remainingSecs / timeLimit) * 100;
+      updateEnergyBar(ratio);
+      if (remainingSecs <= 0) {
+        clearInterval(barInterval);
+      }
+    }, 1000);
+  }
+
+  // 문제, 보기 렌더링
+  const qData = shuffledQuestions[currentQuestionIndex];
+  let container = document.getElementById('questionContainer');
+  container.innerHTML = "";
+
+  // 문제 텍스트
+  let qDiv = document.createElement('div');
+  qDiv.style.marginBottom = "15px";
+  qDiv.innerHTML = `<strong>문제:</strong> ${qData.statement}`;
+  container.appendChild(qDiv);
+
+  // 보기 순서 섞기
+  let choiceArr = qData.choices.map((c, i) => ({ text: c, idx: i }));
+  shuffleArray(choiceArr);
+
+  let cDiv = document.createElement('div');
+  cDiv.className = "choices-container";
+
+  choiceArr.forEach(item => {
+    let btn = document.createElement('button');
+    btn.className = "choice-button";
+    btn.innerHTML = item.text;
+    btn.onclick = () => {
+      // 타이머 중지
+      if (questionTimer) clearTimeout(questionTimer);
+      if (barInterval) clearInterval(barInterval);
+
+      // 정답 체크
+      if (item.idx === qData.correctIndex) {
+        currentScore += scorePerQuestion;
+        document.getElementById('scoreDisplay').textContent = currentScore;
+        alert("정답입니다! +" + scorePerQuestion + "점");
+      } else {
+        currentLife--;
+        document.getElementById('lifeCount').textContent = currentLife;
+        alert("틀렸습니다!\n정답: " + getCorrectAnswerText(qData));
+      }
+      currentQuestionIndex++;
+      showQuestion();
+    };
+    cDiv.appendChild(btn);
+  });
+  container.appendChild(cDiv);
+
+  // MathJax 렌더링
+  MathJax.typeset();
+}
+
+/* 에너지바 업데이트 */
+function updateEnergyBar(percent) {
+  const bar = document.getElementById('energyInner');
+  bar.style.width = percent + "%";
+}
+
+/* 정답 텍스트 가져오기 */
+function getCorrectAnswerText(qObj) {
+  return qObj.choices[qObj.correctIndex];
+}
+
+/* 게임 종료 */
+function endGame(message) {
+  if (timerInterval) clearInterval(timerInterval);
+  if (questionTimer) clearTimeout(questionTimer);
+  if (barInterval) clearInterval(barInterval);
+
+  document.getElementById('gameArea').style.display = 'none';
+  document.getElementById('gameOverArea').style.display = 'block';
+  document.getElementById('gameOverMsg').innerText =
+    message + " (최종 점수: " + currentScore + ")";
+}
+
+/* 점수 전송 */
+function sendScore() {
+  saveData(
+    "부호, 그래프를 이용한 이차부등식의 풀이",
+    playerName,
+    currentScore,
+    totalElapsed
+  );
+}
+</script>
+
+</body>
+</html>
